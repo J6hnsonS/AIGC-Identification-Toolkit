@@ -285,7 +285,7 @@ class VideoBenchmarkRunner:
             # Stage 5: Compute metrics (with quality metrics)
             print("\n[Stage 5/6] Computing metrics...")
             metrics = self._compute_metrics(
-                original_videos, watermarked_paths, attacked_paths, extractions
+                video_paths, original_videos, watermarked_paths, attacked_paths, extractions
             )
 
             # Release original videos after quality metrics computation
@@ -335,7 +335,7 @@ class VideoBenchmarkRunner:
             # Stage 5: Compute metrics
             print("\n[Stage 5/6] Computing metrics...")
             metrics = self._compute_metrics(
-                original_videos, watermarked_paths, attacked_paths, extractions
+                video_paths, original_videos, watermarked_paths, attacked_paths, extractions
             )
 
             # Release original videos after quality metrics computation
@@ -557,6 +557,7 @@ class VideoBenchmarkRunner:
 
     def _compute_metrics(
         self,
+        video_paths: List[Path],
         original_videos: List[torch.Tensor],
         watermarked_paths: List[Path],
         attacked_paths: Dict[str, List[Path]],
@@ -584,25 +585,93 @@ class VideoBenchmarkRunner:
         # Compute quality metrics on watermarked vs original
         print("  Computing quality metrics...")
 
-        # Optimization: Initialize LPIPS model once outside loop (avoids 50x re-initialization)
-        from metrics.quality import init_lpips_model
-        lpips_model = init_lpips_model(device=self.device)
-        print("    LPIPS model initialized (will be reused for all videos)")
+        quality_cfg = (self.config.get('metrics', {}) or {}).get('quality', {}) or {}
+        do_psnr = bool(quality_cfg.get('compute_psnr', True))
+        do_ssim = bool(quality_cfg.get('compute_ssim', True))
+        do_tlp = bool(quality_cfg.get('compute_tLP', True))
+
+        # Optimization: initialize LPIPS model once, but only if tLP is enabled.
+        lpips_model = None
+        if do_tlp:
+            from metrics.quality import init_lpips_model
+            lpips_model = init_lpips_model(device=self.device)
+            print("    LPIPS model initialized (will be reused for all videos)")
+        else:
+            print("    Skipping tLP (LPIPS) per config: metrics.quality.compute_tLP=false")
 
         quality_results = []
         for orig, wm_path in zip(original_videos, watermarked_paths):
             # Load watermarked video from disk
             wm = load_video_tensor(wm_path, device='cpu')
-            q_metrics = compute_all_quality_metrics(wm, orig, device=self.device, lpips_model=lpips_model)
+            q_metrics = compute_all_quality_metrics(
+                wm,
+                orig,
+                device=self.device,
+                lpips_model=lpips_model,
+                do_psnr=do_psnr,
+                do_ssim=do_ssim,
+                do_tLP=do_tlp,
+            )
             quality_results.append(q_metrics)
             del wm  # Immediately release
+        
+        # Save per-video quality metrics as CSV for analysis
+        try:
+            import csv
+            run_scaling_w = None
+            try:
+                if getattr(self, "watermark", None) is not None and getattr(self.watermark, "model", None) is not None:
+                    run_scaling_w = getattr(getattr(self.watermark.model, "blender", None), "scaling_w", None)
+            except Exception:
+                run_scaling_w = None
+
+            csv_path = self.output_dir / "quality_per_video.csv"
+            with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=[
+                        "Original_File_Name",
+                        "Modality",
+                        "Watermarked_Strength",
+                        "PSNR",
+                        "SSIM",
+                        "tLP",
+                        "Watermarked_File",
+                    ],
+                )
+                writer.writeheader()
+                for idx, q in enumerate(quality_results):
+                    orig_path = video_paths[idx] if idx < len(video_paths) else None
+                    orig_name = str(orig_path) if orig_path is not None else str(watermarked_paths[idx].name)
+                    writer.writerow(
+                        {
+                            "Original_File_Name": orig_name,
+                            "Modality": "video",
+                            "Watermarked_Strength": float(run_scaling_w) if run_scaling_w is not None else "",
+                            "PSNR": q.get("psnr", ""),
+                            "SSIM": q.get("ssim", ""),
+                            "tLP": q.get("tLP", ""),
+                            "Watermarked_File": str(watermarked_paths[idx]) if idx < len(watermarked_paths) else "",
+                        }
+                    )
+            print(f"  Saved per-video quality CSV: {csv_path}")
+        except Exception as e:
+            print(f"  Warning: failed to save per-video quality CSV: {e}")
 
         # Average quality metrics
-        metrics['quality'] = {
-            'psnr': np.mean([r['psnr'] for r in quality_results]),
-            'ssim': np.mean([r['ssim'] for r in quality_results if r['ssim'] is not None]),
-            'tLP': np.mean([r['tLP'] for r in quality_results])
-        }
+        metrics['quality'] = {}
+        if do_psnr:
+            metrics['quality']['psnr'] = np.mean([r['psnr'] for r in quality_results if r.get('psnr') is not None])
+        else:
+            metrics['quality']['psnr'] = None
+        if do_ssim:
+            metrics['quality']['ssim'] = np.mean([r['ssim'] for r in quality_results if r.get('ssim') is not None])
+        else:
+            metrics['quality']['ssim'] = None
+        if do_tlp:
+            metrics['quality']['tLP'] = np.mean([r['tLP'] for r in quality_results if r.get('tLP') is not None])
+        else:
+            metrics['quality']['tLP'] = None
 
         # Compute detection metrics per attack
         print("  Computing detection metrics...")
@@ -693,9 +762,18 @@ class VideoBenchmarkRunner:
             f.write("="*60 + "\n\n")
 
             f.write("Quality Metrics (Watermarked vs Original):\n")
-            f.write(f"  PSNR:  {metrics['quality']['psnr']:.2f} dB\n")
-            f.write(f"  SSIM:  {metrics['quality']['ssim']:.4f}\n")
-            f.write(f"  tLP:   {metrics['quality']['tLP']:.6f}\n\n")
+            if metrics['quality'].get('psnr') is None:
+                f.write("  PSNR:  N/A\n")
+            else:
+                f.write(f"  PSNR:  {metrics['quality']['psnr']:.2f} dB\n")
+            if metrics['quality'].get('ssim') is None:
+                f.write("  SSIM:  N/A\n")
+            else:
+                f.write(f"  SSIM:  {metrics['quality']['ssim']:.4f}\n")
+            if metrics['quality'].get('tLP') is None:
+                f.write("  tLP:   N/A\n\n")
+            else:
+                f.write(f"  tLP:   {metrics['quality']['tLP']:.6f}\n\n")
 
             f.write("Detection Metrics (Overall):\n")
             f.write(f"  FNR:           {metrics['detection']['fnr']:.4f}\n")

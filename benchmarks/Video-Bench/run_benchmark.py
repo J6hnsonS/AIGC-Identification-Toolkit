@@ -106,9 +106,18 @@ def main():
         print("="*70)
 
         print("\nQuality Metrics:")
-        print(f"  PSNR:  {results['quality']['psnr']:.2f} dB")
-        print(f"  SSIM:  {results['quality']['ssim']:.4f}")
-        print(f"  tLP:   {results['quality']['tLP']:.6f}")
+        if results['quality'].get('psnr') is None:
+            print("  PSNR:  N/A")
+        else:
+            print(f"  PSNR:  {results['quality']['psnr']:.2f} dB")
+        if results['quality'].get('ssim') is None:
+            print("  SSIM:  N/A")
+        else:
+            print(f"  SSIM:  {results['quality']['ssim']:.4f}")
+        if results['quality'].get('tLP') is None:
+            print("  tLP:   N/A")
+        else:
+            print(f"  tLP:   {results['quality']['tLP']:.6f}")
 
         print("\nDetection Metrics:")
         print(f"  FNR (False Negative Rate):  {results['detection']['fnr']:.4f}")
