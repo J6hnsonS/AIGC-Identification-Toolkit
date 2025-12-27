@@ -175,7 +175,16 @@ def compute_tLP(video_watermarked, video_original, device='cuda', lpips_model=No
     return tLP
 
 
-def compute_all_quality_metrics(video_watermarked, video_original, device='cuda', lpips_model=None):
+def compute_all_quality_metrics(
+    video_watermarked,
+    video_original,
+    device='cuda',
+    lpips_model=None,
+    *,
+    compute_psnr: bool = True,
+    compute_ssim: bool = True,
+    compute_tLP: bool = True,
+):
     """
     Compute all quality metrics for a video pair
 
@@ -196,16 +205,16 @@ def compute_all_quality_metrics(video_watermarked, video_original, device='cuda'
     metrics = {}
 
     # Compute PSNR
-    metrics['psnr'] = compute_psnr(video_watermarked, video_original, is_video=True)
+    metrics['psnr'] = compute_psnr(video_watermarked, video_original, is_video=True) if compute_psnr else None
 
     # Compute SSIM
-    if pytorch_ssim is not None:
+    if compute_ssim and pytorch_ssim is not None:
         metrics['ssim'] = compute_ssim(video_watermarked, video_original)
     else:
         metrics['ssim'] = None
 
     # Compute tLP (with optional pre-initialized model)
-    metrics['tLP'] = compute_tLP(video_watermarked, video_original, device=device, lpips_model=lpips_model)
+    metrics['tLP'] = compute_tLP(video_watermarked, video_original, device=device, lpips_model=lpips_model) if compute_tLP else None
 
     return metrics
 
