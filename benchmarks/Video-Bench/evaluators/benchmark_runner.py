@@ -285,7 +285,7 @@ class VideoBenchmarkRunner:
             # Stage 5: Compute metrics (with quality metrics)
             print("\n[Stage 5/6] Computing metrics...")
             metrics = self._compute_metrics(
-                original_videos, watermarked_paths, attacked_paths, extractions
+                video_paths, original_videos, watermarked_paths, attacked_paths, extractions
             )
 
             # Release original videos after quality metrics computation
@@ -335,7 +335,7 @@ class VideoBenchmarkRunner:
             # Stage 5: Compute metrics
             print("\n[Stage 5/6] Computing metrics...")
             metrics = self._compute_metrics(
-                original_videos, watermarked_paths, attacked_paths, extractions
+                video_paths, original_videos, watermarked_paths, attacked_paths, extractions
             )
 
             # Release original videos after quality metrics computation
@@ -557,6 +557,7 @@ class VideoBenchmarkRunner:
 
     def _compute_metrics(
         self,
+        video_paths: List[Path],
         original_videos: List[torch.Tensor],
         watermarked_paths: List[Path],
         attacked_paths: Dict[str, List[Path]],
@@ -613,6 +614,49 @@ class VideoBenchmarkRunner:
             )
             quality_results.append(q_metrics)
             del wm  # Immediately release
+        
+        # Save per-video quality metrics as CSV for analysis
+        try:
+            import csv
+            run_scaling_w = None
+            try:
+                if getattr(self, "watermark", None) is not None and getattr(self.watermark, "model", None) is not None:
+                    run_scaling_w = getattr(getattr(self.watermark.model, "blender", None), "scaling_w", None)
+            except Exception:
+                run_scaling_w = None
+
+            csv_path = self.output_dir / "quality_per_video.csv"
+            with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=[
+                        "Original_File_Name",
+                        "Modality",
+                        "Watermarked_Strength",
+                        "PSNR",
+                        "SSIM",
+                        "tLP",
+                        "Watermarked_File",
+                    ],
+                )
+                writer.writeheader()
+                for idx, q in enumerate(quality_results):
+                    orig_path = video_paths[idx] if idx < len(video_paths) else None
+                    orig_name = str(orig_path) if orig_path is not None else str(watermarked_paths[idx].name)
+                    writer.writerow(
+                        {
+                            "Original_File_Name": orig_name,
+                            "Modality": "video",
+                            "Watermarked_Strength": float(run_scaling_w) if run_scaling_w is not None else "",
+                            "PSNR": q.get("psnr", ""),
+                            "SSIM": q.get("ssim", ""),
+                            "tLP": q.get("tLP", ""),
+                            "Watermarked_File": str(watermarked_paths[idx]) if idx < len(watermarked_paths) else "",
+                        }
+                    )
+            print(f"  Saved per-video quality CSV: {csv_path}")
+        except Exception as e:
+            print(f"  Warning: failed to save per-video quality CSV: {e}")
 
         # Average quality metrics
         metrics['quality'] = {}
